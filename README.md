@@ -1,12 +1,19 @@
 # Skeletonpy
 
 Control software for an animatronic Halloween skeleton running on a Raspberry
-Pi Zero 2 W. It tracks faces with a camera, syncs the jaw to microphone
+Pi 4 Model B (4GB). It tracks faces with a camera, syncs the jaw to microphone
 volume, switches between a calm "Host" and a jump-scare "Trickster"
 personality, and speaks via pre-recorded lines and offline text-to-speech.
 
 For the physical build (parts list, wiring, 3D-printed mounts, OS setup),
 see [BUILD_GUIDE.md](BUILD_GUIDE.md). This README covers the software.
+
+> **Note on hardware history:** this project originally targeted the
+> Raspberry Pi Zero 2 W. Due to a prolonged supply shortage, the board was
+> switched to a Pi 4 Model B (4GB). The Pi 4's larger footprint means it no
+> longer fits inside the skull — it now lives in a separate torso/ribcage
+> enclosure, connected to the skull's camera, servos, and LEDs by extended
+> cables. The software stack is unchanged by this swap.
 
 ## How it works
 
@@ -45,7 +52,7 @@ or config changes.
 | [audio.py](audio.py) | Mic amplitude sensing (jaw sync, loud-noise trigger) + non-blocking playback/TTS |
 | [led.py](led.py) | Eye LED brightness, flicker, and Host/Trickster color state |
 | [config.py](config.py) | All tunable parameters: GPIO pins, servo limits, thresholds, timing, audio line sets |
-| [script_lines.py](script_lines.py) | Spoken-line content (guest lines, event lines, monologues) — kept separate from `config.py` |
+| [script_lines.py](script_lines.py) | Spoken-line content (guest lines, event lines, monologues) — kept separate from `config.py`. **Not tracked in this repo** — contains personalized guest content, kept local-only. |
 | [generate_audio.py](generate_audio.py) | One-time offline script (run on a dev machine, not the Pi) that batch-generates MP3s via the ElevenLabs API from `script_lines.py` |
 | `*.scad` | OpenSCAD source for 3D-printed mounts (see `BUILD_GUIDE.md` Part 4) |
 
@@ -86,17 +93,25 @@ files are skipped). Copy the resulting `audio/` folder onto the Pi —
 All tunables live in [config.py](config.py) as frozen dataclasses grouped by
 subsystem (`GPIOPins`, `ServoLimits`, `AudioConfig`, `VisionConfig`,
 `ProximityConfig`, `TimingConfig`, `AudioLineConfig`), bundled under the
-module-level `CONFIG` singleton. Defaults are tuned for the Pi Zero 2 W's
-limited CPU (see the module docstring for specifics — smaller camera frame,
-frame-skipped detection, slower loop rate).
+module-level `CONFIG` singleton. Defaults were originally tuned for the Pi
+Zero 2 W's limited CPU (smaller camera frame, frame-skipped detection,
+slower loop rate). On the Pi 4, these are conservative rather than
+necessary — there's headroom to raise camera resolution or loop rate if
+you want a snappier feel, but the defaults are left as-is since they
+already work reliably.
 
 ## Gotchas
 
 - `main.py --test` reports in its log output which backend (real or mock)
   was selected for each module — if something you've wired up shows "mock",
-  that's the first thing to check.
+  that's the first thing to check. Note that on a non-Pi dev machine (e.g.
+  Windows), `picamera2` and `gpiozero` are *expected* to fall back to mock —
+  that's the graceful-degradation design working as intended, not a bug.
 - `generate_audio.py` is meant to run once, off-Pi, before deployment — not
   as part of the live control loop.
 - Jittery head tracking or unreliable low-light detection are tuned via
   `tracking_smoothing_host` and `detection_min_neighbors` in `config.py`
   (see `BUILD_GUIDE.md` Part 5, steps 3 and 5).
+- Since the Pi 4 lives in the torso rather than the skull, cable runs from
+  skull to torso are longer than the original Pi Zero 2 W design assumed —
+  see `BUILD_GUIDE.md` Part 2.8 for routing notes.
