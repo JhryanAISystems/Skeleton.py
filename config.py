@@ -1,36 +1,39 @@
 """
 config.py
 
-Central configuration for the animatronic skeleton system, tuned for
-Raspberry Pi Zero 2 W.
+Central configuration for the animatronic skeleton system.
 
-HARDWARE ASSUMPTIONS (Pi Zero 2 W specific)
+HARDWARE HISTORY
+-----------------
+Originally tuned for a Raspberry Pi Zero 2 W; a supply shortage forced a
+pivot to a Raspberry Pi 4 Model B (4GB). The Pi 4 has considerably more
+headroom, so the vision/timing defaults below (originally chosen to keep
+the Zero 2 W's single-1GHz-quad-core CPU from stuttering) are left as
+conservative-but-safe rather than strictly necessary. Bump
+`frame_width`/`frame_height` or `loop_hz` up if you want a snappier feel;
+nothing below requires it to work correctly on a Pi 4.
+
+HARDWARE ASSUMPTIONS
 ---------------------------------------------
-- Raspberry Pi Zero 2 W: quad-core Cortex-A53 @ 1GHz, 512MB RAM. This is
-  enough for real-time Haar-cascade face detection at LOW resolution
-  (320x240), but NOT enough for full-res (640x480+) detection at a smooth
-  frame rate the way a Pi 4/5 could handle. This file's `VisionConfig`
-  reflects that: smaller frame size, and `vision.py` is written to skip
-  every other frame under load. If you swap to a Pi 4/5 later, bump
-  `frame_width`/`frame_height` back up and remove the frame-skip.
-- Camera: any Raspberry Pi Camera Module (v2, v3, or the older v1) BUT the
-  Zero 2 W's CSI connector is the small/narrow style — you need a
-  "Raspberry Pi Zero camera cable" adapter, not the standard-width ribbon
-  that ships with the camera. This is the #1 thing first-timers get wrong
-  ordering parts for this build.
-- The Zero 2 W has NO built-in audio jack and NO full-size USB port. Mic
-  and speaker are handled via a single USB audio adapter (mic-in +
-  headphone-out combo dongle) plugged into a micro-USB OTG adapter on the
-  Zero's data-capable micro-USB port (the one labeled "USB", not "PWR").
-- Two MG996R servos (head pan, jaw) via PWM through `gpiozero`.
+- Raspberry Pi 4 Model B (4GB). Lives in a torso/ribcage enclosure — it no
+  longer fits inside the skull alongside the camera and servos, so those
+  peripherals connect back to it via extended cables (see BUILD_GUIDE.md).
+- Camera: Raspberry Pi Camera Module 3, using the standard CSI cable that
+  ships with it (no narrow-CSI adapter needed on a Pi 4).
+- Three MG996R servos: **pan** (`head_servo`, left/right), **tilt**
+  (`tilt_servo`, up/down), and **jaw**. Pan and tilt are driven together
+  each tick to track a detected face; jaw is driven independently from
+  microphone amplitude.
+- No built-in audio jack assumption removed — Pi 4 has one, but a USB
+  audio adapter is still recommended for cleaner mic input; see
+  `audio.py`.
 - Amber/red-capable eye LEDs, PWM-driven via `gpiozero.PWMLED`.
 - Knock sensor (piezo/vibration) on a GPIO input pin.
 - HC-SR04 ultrasonic proximity sensor for the "close proximity" trigger.
 - GPIO pin numbers below use BCM numbering and match the standard 40-pin
-  header, which the Zero 2 W shares with every other modern Pi — so if you
-  later upgrade to a Pi 4/5, your wiring and these pin numbers don't change.
-- Control loop target: ~15 Hz (slower than a Pi 4's ~25 Hz) to leave the
-  Zero 2 W's CPU headroom for face detection.
+  header, unchanged across the Pi family.
+- Control loop target: ~15 Hz. This was originally a Zero-2-W-conservative
+  choice; the Pi 4 has room to run faster if desired.
 """
 
 from __future__ import annotations
@@ -43,7 +46,8 @@ from pathlib import Path
 class GPIOPins:
     """BCM pin assignments for all hardware peripherals."""
 
-    head_servo: int = 17
+    head_servo: int = 17    # pan (left/right)
+    tilt_servo: int = 26    # tilt (up/down)
     jaw_servo: int = 27
     eye_led_left: int = 22
     eye_led_right: int = 23
@@ -54,11 +58,20 @@ class GPIOPins:
 
 @dataclass(frozen=True)
 class ServoLimits:
-    """Angle limits and easing behavior for each servo, in degrees."""
+    """Angle limits and easing behavior for each servo, in degrees.
 
-    head_min_deg: float = 30.0
+    Pan and tilt both use a modest range of motion from center — wide
+    enough to look natural, narrow enough to keep the head looking
+    intentional rather than a whipping full 180° sweep.
+    """
+
+    head_min_deg: float = 30.0     # pan
     head_center_deg: float = 90.0
     head_max_deg: float = 150.0
+
+    tilt_min_deg: float = 60.0     # tilt: ~30° up/down from center
+    tilt_center_deg: float = 90.0
+    tilt_max_deg: float = 120.0
 
     jaw_closed_deg: float = 20.0
     jaw_open_deg: float = 70.0
@@ -69,11 +82,7 @@ class ServoLimits:
 
 @dataclass(frozen=True)
 class AudioConfig:
-    """Microphone thresholds and jaw-mapping parameters.
-
-    Read via a USB audio adapter (mic-in), not I2S — much simpler to set
-    up on a Zero 2 W than wiring a raw I2S mic and fighting ALSA overlays.
-    """
+    """Microphone thresholds and jaw-mapping parameters."""
 
     sample_rate_hz: int = 16000
     block_size: int = 512
@@ -90,10 +99,9 @@ class AudioConfig:
 class VisionConfig:
     """Face-tracking sensitivity and smoothing parameters.
 
-    Frame size is intentionally small (320x240) — the Zero 2 W's CPU can't
-    sustain Haar-cascade detection on larger frames without the control
-    loop stuttering. `vision.py` also skips detection on alternating
-    frames to keep the rest of the loop (servo/LED/audio) responsive.
+    Frame size and frame-skip were originally chosen for the Zero 2 W's
+    limited CPU. The Pi 4 has comfortable headroom to run these values as
+    conservative defaults rather than hard requirements.
     """
 
     frame_width: int = 320
@@ -111,6 +119,30 @@ class VisionConfig:
 
 
 @dataclass(frozen=True)
+class RecognitionConfig:
+    """Face recognition (LBPH) thresholds and behavior.
+
+    LBPH confidence is a *distance*, not a typical ML confidence score —
+    LOWER values mean a closer match. `confidence_threshold` is the
+    maximum LBPH distance accepted as a positive identification. Usable
+    range is usually roughly 40-90 depending on enrollment photo quality
+    and lighting; this default is a conservative starting point to tune
+    against your own enrolled guests (see `enroll_faces.py` /
+    `train_recognizer.py`).
+
+    If `model_path`/`label_map_path` don't exist, `vision.py` falls back
+    to tracking-only mode automatically — recognition is treated as
+    optional, not required for the prop to function.
+    """
+
+    confidence_threshold: float = 80.0
+    cooldown_seconds: float = 8.0
+    model_path: Path = Path("face_model.yml")
+    label_map_path: Path = Path("label_map.json")
+    face_sample_size: tuple[int, int] = (200, 200)
+
+
+@dataclass(frozen=True)
 class ProximityConfig:
     """Ultrasonic proximity sensor thresholds."""
 
@@ -124,7 +156,6 @@ class TimingConfig:
 
     trickster_timeout_s: float = 20.0
     mode_switch_cooldown_s: float = 4.0
-    # Slower than a Pi 4/5 build (25 Hz) to leave CPU room for face detection.
     loop_hz: float = 15.0
 
 
@@ -168,6 +199,7 @@ class SystemConfig:
     servo: ServoLimits = field(default_factory=ServoLimits)
     audio: AudioConfig = field(default_factory=AudioConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    recognition: RecognitionConfig = field(default_factory=RecognitionConfig)
     proximity: ProximityConfig = field(default_factory=ProximityConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     lines: AudioLineConfig = field(default_factory=AudioLineConfig)

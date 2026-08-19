@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 import time
 
 from audio import AudioInput, AudioOutput
@@ -24,6 +25,55 @@ from servo import ServoController
 from vision import FaceTracker
 
 logger = logging.getLogger(__name__)
+
+
+def make_guest_greeting_callback(audio_out: AudioOutput):
+    """Build the `on_guest_recognized` callback passed to `BehaviorManager`.
+
+    This is the one place that bridges recognition (guest key, generic)
+    to actual dialogue content (`script_lines.py`, personal/private —
+    not tracked in this repo, see .gitignore). Import is deferred and
+    wrapped so the system degrades gracefully if `script_lines.py` isn't
+    present on this machine (e.g. a fresh clone before it's been copied
+    over separately, per BUILD_GUIDE.md).
+
+    NOTE: this assumes `script_lines.py` exposes a `GUESTS` dict shaped
+    roughly like:
+        GUESTS = {
+            "guest_key": {
+                "display_name": "...",
+                "lines": [{"text": "..."}, ...],
+            },
+            ...
+        }
+    Adjust the lookup below if your actual structure differs.
+    """
+
+    def _on_guest_recognized(guest_key: str) -> None:
+        try:
+            from script_lines import GUESTS  # type: ignore
+        except ImportError:
+            logger.debug(
+                "script_lines.py not found; skipping personalized greeting "
+                "for guest '%s'", guest_key,
+            )
+            return
+
+        guest = GUESTS.get(guest_key)
+        if not guest:
+            logger.debug("Guest key '%s' not found in script_lines.GUESTS", guest_key)
+            return
+
+        lines = guest.get("lines") or []
+        if not lines:
+            return
+
+        choice = random.choice(lines)
+        text = choice.get("text") if isinstance(choice, dict) else str(choice)
+        if text:
+            audio_out.speak_text(text)
+
+    return _on_guest_recognized
 
 
 def build_behavior_manager() -> BehaviorManager:
@@ -44,6 +94,7 @@ def build_behavior_manager() -> BehaviorManager:
         audio_out=audio_out,
         servos=servos,
         eyes=eyes,
+        on_guest_recognized=make_guest_greeting_callback(audio_out),
     )
 
 
@@ -78,7 +129,8 @@ def run_test_harness() -> None:
     """Lightweight inline smoke test using fully mocked hardware.
 
     Verifies:
-      1. The system initializes without error.
+      1. The system initializes without error (including the new tilt
+         servo and recognizer backend detection).
       2. A knock event correctly triggers a switch to TRICKSTER mode.
       3. A number of ticks run cleanly without exceptions in TRICKSTER mode.
       4. Mode reverts to HOST once the trickster timeout window would have
@@ -106,6 +158,7 @@ def run_test_harness() -> None:
         eyes=eyes,
         knock_sensor=knock,
         proximity_sensor=proximity,
+        on_guest_recognized=make_guest_greeting_callback(audio_out),
     )
 
     assert manager.mode == Mode.HOST, "Should start in HOST mode"
@@ -113,6 +166,7 @@ def run_test_harness() -> None:
 
     for _ in range(5):
         manager.tick()
+    logger.info("PASS: ticks run cleanly with pan/tilt + recognition wired in")
 
     knock.simulate_knock()
     manager.tick()

@@ -1,9 +1,9 @@
 """
 servo.py
 
-Head-pan and jaw servo control, with software easing for smooth motion.
+Pan, tilt, and jaw servo control, with software easing for smooth motion.
 
-Hardware assumption: two MG996R servos driven via PWM. On a real Pi this
+Hardware assumption: three MG996R servos driven via PWM. On a real Pi this
 uses `gpiozero.AngularServo` (which itself typically rides on the `pigpio`
 pin factory for jitter-free PWM). When `gpiozero`/GPIO hardware isn't
 available (e.g., developing on a laptop), a `MockServoBackend` is used
@@ -106,20 +106,34 @@ def ease_toward(current: float, target: float, factor: float) -> float:
 
 
 class ServoController:
-    """Owns the head-pan and jaw servos and exposes eased movement."""
+    """Owns the pan, tilt, and jaw servos and exposes eased movement.
+
+    "Head" naming (update_head / center_head / head_angle) refers
+    specifically to the pan (left/right) axis, kept as-is for backward
+    compatibility with existing calling code. Tilt (up/down) was added
+    afterward as a separate axis with its own eased-movement methods,
+    following the same pattern.
+    """
 
     def __init__(self, backend: ServoBackend | None = None) -> None:
         self._backend = backend or _detect_backend()
         self._head_angle = CONFIG.servo.head_center_deg
+        self._tilt_angle = CONFIG.servo.tilt_center_deg
         self._jaw_angle = CONFIG.servo.jaw_closed_deg
         # Push initial positions to hardware.
         self._backend.set_angle(CONFIG.pins.head_servo, self._head_angle)
+        self._backend.set_angle(CONFIG.pins.tilt_servo, self._tilt_angle)
         self._backend.set_angle(CONFIG.pins.jaw_servo, self._jaw_angle)
 
     @property
     def head_angle(self) -> float:
-        """Current (eased) head servo angle in degrees."""
+        """Current (eased) pan servo angle in degrees."""
         return self._head_angle
+
+    @property
+    def tilt_angle(self) -> float:
+        """Current (eased) tilt servo angle in degrees."""
+        return self._tilt_angle
 
     @property
     def jaw_angle(self) -> float:
@@ -127,12 +141,20 @@ class ServoController:
         return self._jaw_angle
 
     def update_head(self, target_deg: float, easing_factor: float) -> None:
-        """Ease the head servo one tick toward `target_deg`."""
+        """Ease the pan servo one tick toward `target_deg`."""
         clamped = max(
             CONFIG.servo.head_min_deg, min(CONFIG.servo.head_max_deg, target_deg)
         )
         self._head_angle = ease_toward(self._head_angle, clamped, easing_factor)
         self._backend.set_angle(CONFIG.pins.head_servo, self._head_angle)
+
+    def update_tilt(self, target_deg: float, easing_factor: float) -> None:
+        """Ease the tilt servo one tick toward `target_deg`."""
+        clamped = max(
+            CONFIG.servo.tilt_min_deg, min(CONFIG.servo.tilt_max_deg, target_deg)
+        )
+        self._tilt_angle = ease_toward(self._tilt_angle, clamped, easing_factor)
+        self._backend.set_angle(CONFIG.pins.tilt_servo, self._tilt_angle)
 
     def update_jaw(self, target_deg: float, easing_factor: float = 0.5) -> None:
         """Ease the jaw servo one tick toward `target_deg`."""
@@ -144,8 +166,12 @@ class ServoController:
         self._backend.set_angle(CONFIG.pins.jaw_servo, self._jaw_angle)
 
     def center_head(self, easing_factor: float) -> None:
-        """Ease the head back toward its center resting position."""
+        """Ease the pan servo back toward its center resting position."""
         self.update_head(CONFIG.servo.head_center_deg, easing_factor)
+
+    def center_tilt(self, easing_factor: float) -> None:
+        """Ease the tilt servo back toward its center resting position."""
+        self.update_tilt(CONFIG.servo.tilt_center_deg, easing_factor)
 
     def close_jaw(self, easing_factor: float = 0.5) -> None:
         """Ease the jaw toward fully closed."""

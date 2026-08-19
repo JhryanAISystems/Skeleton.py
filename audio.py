@@ -11,15 +11,15 @@ equivalents. A background thread + queue is simpler and more robust for
 this than wrapping blocking calls in an executor, and it keeps `main.py`'s
 control loop fully synchronous and easy to reason about.
 
-Hardware assumption (Pi Zero 2 W): a single USB audio adapter (combo
-mic-in + headphone-out dongle) plugged into the Zero's data-capable
-micro-USB port via a micro-USB-to-USB-A OTG adapter. The Zero 2 W has no
-built-in audio jack, so this is the simplest path to both mic input and
-speaker output without wiring raw I2S and configuring ALSA overlays.
-`sounddevice` and the playback backends below auto-detect the USB audio
-device as the default ALSA device — no special config needed beyond
-`raspi-config`'s audio output selection (Section on Software Setup in the
-build guide covers this in one command).
+Hardware note: a single USB audio adapter (combo mic-in + headphone-out
+dongle) is recommended for clean mic input, plugged in via USB. (The
+original Pi Zero 2 W target had no built-in audio jack at all, requiring
+a micro-USB OTG adapter for this; the Pi 4 has a full-size USB port and
+its own 3.5mm jack, but a USB audio dongle is still the more reliable
+choice for mic input.) `sounddevice` and the playback backends below
+auto-detect the USB audio device as the default ALSA device — no special
+config needed beyond `raspi-config`'s audio output selection (see the
+Software Setup section in the build guide).
 """
 
 from __future__ import annotations
@@ -308,6 +308,16 @@ class AudioOutput:
         )
         if lines:
             self._queue.put(("tts", random.choice(lines)))
+
+    def speak_text(self, text: str) -> None:
+        """Queue an arbitrary line of TTS text directly, bypassing the
+        HOST/TRICKSTER line sets. Used for guest-specific dialogue (see
+        `behavior.py`'s `on_guest_recognized` hook) where the actual line
+        content comes from `script_lines.py` rather than `config.py`.
+        Non-blocking.
+        """
+        if text:
+            self._queue.put(("tts", text))
 
     def shutdown(self) -> None:
         self._running = False
